@@ -23,8 +23,8 @@ else:
 CLIENT_TYPE = "vertex_connect"
 
 
-class VertexPluginConfig(PluginConfigBase):
-    """Vertex AI 插件配置。"""
+class PluginSectionConfig(PluginConfigBase):
+    """Vertex AI 插件基础设置。"""
 
     config_version: str = Field(default="0.1.0", description="配置结构版本")
     enabled: bool = Field(default=True, description="启用 Vertex AI Provider")
@@ -38,6 +38,12 @@ class VertexPluginConfig(PluginConfigBase):
     )
 
 
+class VertexPluginConfig(PluginConfigBase):
+    """Vertex AI 插件根配置。"""
+
+    plugin: PluginSectionConfig = Field(default_factory=PluginSectionConfig)
+
+
 class VertexAIConnectPlugin(MaiBotPlugin):
     """Vertex AI 连接器插件。"""
 
@@ -45,8 +51,8 @@ class VertexAIConnectPlugin(MaiBotPlugin):
 
     async def on_load(self) -> None:
         self.client_manager = VertexClientManager(
-            default_project=self.config.default_project,
-            default_location=self.config.default_location,
+            default_project=self.config.plugin.default_project,
+            default_location=self.config.plugin.default_location,
         )
         self.provider = VertexAIProvider(self.client_manager)
         self.ctx.logger.info("Vertex AI Connect Plugin v%s 已成功加载", __version__)
@@ -60,8 +66,8 @@ class VertexAIConnectPlugin(MaiBotPlugin):
     ) -> None:
         del config_data, version
         if scope == "self" and hasattr(self, "client_manager"):
-            self.client_manager.default_project = self.config.default_project
-            self.client_manager.default_location = self.config.default_location
+            self.client_manager.default_project = self.config.plugin.default_project
+            self.client_manager.default_location = self.config.plugin.default_location
             self.client_manager.clear()
             self.ctx.logger.info("Vertex AI 插件配置已更新并刷新客户端缓存")
 
@@ -73,7 +79,7 @@ class VertexAIConnectPlugin(MaiBotPlugin):
     )
     async def handle_llm_provider(self, operation: str, request: dict[str, Any]) -> dict[str, Any]:
         """处理来自 MaiBot Host 的统一 LLM Provider 调用。"""
-        if not self.config.enabled:
+        if not self.config.plugin.enabled:
             raise RuntimeError("Vertex AI Connect Provider 已在插件配置中禁用")
 
         if operation == "response":
@@ -91,8 +97,8 @@ class VertexAIConnectPlugin(MaiBotPlugin):
         try:
             auth_info = resolve_vertex_auth(
                 provider_data={},
-                default_project=self.config.default_project,
-                default_location=self.config.default_location,
+                default_project=self.config.plugin.default_project,
+                default_location=self.config.plugin.default_location,
             )
             mode = "Vertex API Key" if auth_info.api_key else "OAuth2 / ADC / Service Account"
             text = (
@@ -100,7 +106,7 @@ class VertexAIConnectPlugin(MaiBotPlugin):
                 f"- Project ID: {auth_info.project}\n"
                 f"- Location: {auth_info.location}\n"
                 f"- 凭据模式: {mode}\n"
-                f"- 插件启用状态: {'开启' if self.config.enabled else '关闭'}"
+                f"- 插件启用状态: {'开启' if self.config.plugin.enabled else '关闭'}"
             )
         except Exception as e:
             text = f"【Vertex AI 连接状态】\n- 凭据解析失败: {e}"
