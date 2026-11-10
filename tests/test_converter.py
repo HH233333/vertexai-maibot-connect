@@ -128,3 +128,31 @@ def test_parse_gemini_response():
     assert parsed["output_items"][1]["item_type"] == "AssistantMessageItem"
     assert parsed["output_items"][2]["item_type"] == "FunctionCallItem"
     assert parsed["output_items"][2]["tool_call"]["func_name"] == "query_db"
+
+
+def test_build_config_thinking_level():
+    request = {
+        "extra_params": {"thinking_level": "low"},
+    }
+    config = build_generate_content_config(request)
+    assert config.thinking_config.include_thoughts is True
+    assert str(config.thinking_config.thinking_level).upper().endswith("LOW")
+
+
+def test_parse_gemini_empty_response():
+    import pytest
+
+    # 1. 正常 STOP 静默结束
+    stop_resp = types.GenerateContentResponse(
+        candidates=[types.Candidate(content=types.Content(parts=[]), finish_reason="STOP")]
+    )
+    parsed_stop = parse_gemini_response_to_maibot(stop_resp)
+    assert parsed_stop["content"] == ""
+    assert parsed_stop["output_items"] == []
+
+    # 2. 异常拦截（如 SAFETY）应抛出包含 finish_reason 的异常
+    safety_resp = types.GenerateContentResponse(
+        candidates=[types.Candidate(content=types.Content(parts=[]), finish_reason="SAFETY")]
+    )
+    with pytest.raises(RuntimeError, match="SAFETY"):
+        parse_gemini_response_to_maibot(safety_resp)

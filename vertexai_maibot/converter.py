@@ -193,17 +193,29 @@ def build_generate_content_config(
 
     # 思考链（Thinking）
     extra_params = request.get("extra_params") or {}
-    thinking_budget = None
-    if "thinking_budget" in extra_params:
-        try:
-            thinking_budget = int(extra_params["thinking_budget"])
-        except (TypeError, ValueError):
-            pass
+    explicit_thinking = extra_params.get("thinking_config") or extra_params.get("think_config")
+    if explicit_thinking is not None:
+        if isinstance(explicit_thinking, dict):
+            config_args["thinking_config"] = types.ThinkingConfig(**explicit_thinking)
+        else:
+            config_args["thinking_config"] = explicit_thinking
+    else:
+        thinking_level = extra_params.get("thinking_level") or extra_params.get("reasoning_effort")
+        thinking_budget = None
+        if "thinking_budget" in extra_params:
+            try:
+                thinking_budget = int(extra_params["thinking_budget"])
+            except (TypeError, ValueError):
+                pass
 
-    thinking_args: Dict[str, Any] = {"include_thoughts": True}
-    if thinking_budget is not None:
-        thinking_args["thinking_budget"] = thinking_budget
-    config_args["thinking_config"] = types.ThinkingConfig(**thinking_args)
+        thinking_args: Dict[str, Any] = {
+            "include_thoughts": bool(extra_params.get("include_thoughts", True))
+        }
+        if thinking_level is not None:
+            thinking_args["thinking_level"] = str(thinking_level).strip()
+        if thinking_budget is not None:
+            thinking_args["thinking_budget"] = thinking_budget
+        config_args["thinking_config"] = types.ThinkingConfig(**thinking_args)
 
     return types.GenerateContentConfig(**config_args)
 
@@ -218,9 +230,11 @@ def parse_gemini_response_to_maibot(
     reasoning_pieces: List[str] = []
     tool_calls_payload: List[Dict[str, Any]] = []
     output_items: List[Dict[str, Any]] = []
+    finish_reason = None
 
     if response.candidates:
         candidate = response.candidates[0]
+        finish_reason = getattr(candidate, "finish_reason", None)
         content = candidate.content
         if content and content.parts:
             for part in content.parts:
@@ -269,6 +283,16 @@ def parse_gemini_response_to_maibot(
 
     full_text = "".join(text_pieces)
     full_reasoning = "\n".join(reasoning_pieces)
+
+    if not full_text and not tool_calls_payload and not full_reasoning:
+        finish_reason_str = (str(finish_reason) if finish_reason is not None else "").upper()
+        if "STOP" in finish_reason_str:
+            logger.debug("Vertex AI 正常响应静默结束（无正文且无工具调用，finish_reason=%s）", finish_reason)
+        else:
+            prompt_feedback = getattr(response, "prompt_feedback", None)
+            block_reason = getattr(prompt_feedback, "block_reason", None) if prompt_feedback else None
+            detail = f"block_reason={block_reason}" if block_reason else f"finish_reason={finish_reason}"
+            raise RuntimeError(f"Vertex AI 响应中既无文本内容也无工具调用（{detail}）")
 
     # 组装 AssistantMessageItem
     if full_text:
