@@ -26,6 +26,10 @@ CLIENT_TYPE = "vertex_connect"
 class PluginSectionConfig(PluginConfigBase):
     """Vertex AI 插件基础设置。"""
 
+    __ui_label__ = "基础设置"
+    __ui_icon__ = "settings"
+    __ui_order__ = 0
+
     config_version: str = Field(default="0.1.0", description="配置结构版本")
     enabled: bool = Field(default=True, description="启用 Vertex AI Provider")
     default_project: str = Field(

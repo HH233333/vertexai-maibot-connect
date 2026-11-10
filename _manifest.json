@@ -33,6 +33,12 @@
     }
   ],
   "plugin_type": "provider",
+  "display": {
+    "icon": {
+      "type": "lucide",
+      "value": "cloud"
+    }
+  },
   "capabilities": [
     "send.text"
   ],
