@@ -24,6 +24,7 @@ def convert_context_items_to_contents(
     """将 MaiBot 序列化的 context_items 转换为 Gemini 内容列表与 system_instruction。"""
     contents: List[types.Content] = []
     system_instructions: List[str] = []
+    tool_name_by_call_id: Dict[str, str] = {}
 
     index = 0
     total = len(context_items)
@@ -90,6 +91,9 @@ def convert_context_items_to_contents(
                 elif g_type == "FunctionCallItem":
                     tool_call = g_item.get("tool_call") or {}
                     func_name = str(tool_call.get("func_name") or "").strip()
+                    call_id = str(tool_call.get("call_id") or "").strip()
+                    if call_id and func_name:
+                        tool_name_by_call_id[call_id] = func_name
                     args = tool_call.get("args") or {}
                     if isinstance(args, str):
                         try:
@@ -102,21 +106,39 @@ def convert_context_items_to_contents(
                 contents.append(types.Content(role="model", parts=model_parts))
             continue
 
-        # 4. 工具输出响应（转换为 user 角色的 function_response）
+        # 4. 工具输出响应聚合（Gemini 强制要求并行工具调用的响应放在同一个轮次中）
         if item_type == "FunctionCallOutputItem":
-            func_name = str(item.get("tool_name") or "").strip()
-            output = item.get("output")
-            if not isinstance(output, (dict, list)):
-                output_payload = {"output": str(output or "")}
-            else:
-                output_payload = {"output": output}
-            contents.append(
-                types.Content(
-                    role="user",
-                    parts=[types.Part.from_function_response(name=func_name or "tool", response=output_payload)],
-                )
-            )
+            group_items = [item]
             index += 1
+            while index < total:
+                next_item = context_items[index]
+                next_type = str(next_item.get("item_type") or "").strip()
+                if next_type == "FunctionCallOutputItem":
+                    group_items.append(next_item)
+                    index += 1
+                else:
+                    break
+
+            resp_parts: List[types.Part] = []
+            for g_item in group_items:
+                call_id = str(g_item.get("call_id") or "").strip()
+                func_name = str(g_item.get("tool_name") or tool_name_by_call_id.get(call_id, "")).strip()
+                output = g_item.get("output")
+                if not isinstance(output, (dict, list)):
+                    output_payload = {"output": str(output or "")}
+                else:
+                    output_payload = {"output": output}
+                resp_parts.append(
+                    types.Part(
+                        function_response=types.FunctionResponse(
+                            name=func_name or "tool",
+                            response=output_payload,
+                            id=call_id or None,
+                        )
+                    )
+                )
+            if resp_parts:
+                contents.append(types.Content(role="user", parts=resp_parts))
             continue
 
         # 其他未识别项直接跳过

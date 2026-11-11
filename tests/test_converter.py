@@ -156,3 +156,80 @@ def test_parse_gemini_empty_response():
     )
     with pytest.raises(RuntimeError, match="SAFETY"):
         parse_gemini_response_to_maibot(safety_resp)
+
+
+def test_convert_parallel_function_calls_and_responses():
+    """测试多工具（并行工具）调用的模型轮次和响应轮次均正确聚合。"""
+    sample_items = [
+        {
+            "item_type": "UserMessageItem",
+            "parts": [{"type": "text", "text": "查下小明和小红的信息"}],
+        },
+        {
+            "item_type": "FunctionCallItem",
+            "tool_call": {
+                "call_id": "call_1",
+                "func_name": "query_person",
+                "args": {"name": "小明"},
+            },
+        },
+        {
+            "item_type": "FunctionCallItem",
+            "tool_call": {
+                "call_id": "call_2",
+                "func_name": "query_person",
+                "args": {"name": "小红"},
+            },
+        },
+        {
+            "item_type": "FunctionCallOutputItem",
+            "call_id": "call_1",
+            "tool_name": "query_person",
+            "output": "小明资料",
+            "success": True,
+        },
+        {
+            "item_type": "FunctionCallOutputItem",
+            "call_id": "call_2",
+            "tool_name": "",  # 测试通过 call_id 回退查找 tool_name
+            "output": "小红资料",
+            "success": True,
+        },
+        {
+            "item_type": "UserMessageItem",
+            "parts": [{"type": "text", "text": "请总结"}],
+        },
+    ]
+
+    contents, _ = convert_context_items_to_contents(sample_items)
+    # 期望轮次结构：
+    # 1. user: "查下小明和小红的信息"
+    # 2. model: 包含 2 个 function_call (call_1, call_2)
+    # 3. user: 包含 2 个 function_response (对应 call_1, call_2)
+    # 4. user: "请总结"
+    assert len(contents) == 4
+
+    # 验证 model 轮次聚合
+    model_turn = contents[1]
+    assert model_turn.role == "model"
+    assert len(model_turn.parts) == 2
+    assert model_turn.parts[0].function_call.name == "query_person"
+    assert model_turn.parts[1].function_call.name == "query_person"
+
+    # 验证 response 轮次聚合
+    resp_turn = contents[2]
+    assert resp_turn.role == "user"
+    assert len(resp_turn.parts) == 2
+    assert resp_turn.parts[0].function_response.name == "query_person"
+    assert resp_turn.parts[0].function_response.id == "call_1"
+    assert resp_turn.parts[0].function_response.response == {"output": "小明资料"}
+    assert resp_turn.parts[1].function_response.name == "query_person"
+    assert resp_turn.parts[1].function_response.id == "call_2"
+    assert resp_turn.parts[1].function_response.response == {"output": "小红资料"}
+
+    # 验证后续 user 轮次
+    next_user_turn = contents[3]
+    assert next_user_turn.role == "user"
+    assert len(next_user_turn.parts) == 1
+    assert next_user_turn.parts[0].text == "请总结"
+
