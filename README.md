@@ -45,7 +45,7 @@
 1. 进入 MaiBot WebUI -> **「模型设置」** -> **「提供商管理」** -> 点击**「添加提供商」**：
    - **提供商名称**：自定义，例如 `vertex` 或 `Google-Vertex-Connect`
    - **客户端类型（Client Type）**：选择或输入 **`vertex_connect`**（核心必填项，关联本插件通道）
-   - **Base URL**：例如 `https://us-central1-aiplatform.googleapis.com` 或 `https://aiplatform.googleapis.com`
+   - **Base URL**：例如 `https://aiplatform.googleapis.com` 或 `https://us-central1-aiplatform.googleapis.com`
 
 2. **根据你使用的鉴权方式，在 WebUI 进行相应填写**：
 
@@ -59,7 +59,7 @@
 | **6. 本地默认凭据 (ADC)** | **留空不填** | 添加 `project: 你的GCP项目ID` | 服务器执行过 `gcloud auth application-default login` |
 | **7. 本地 `gcloud` CLI 自动探测** | **留空不填** | **留空不填** | 服务器已安装并登录 `gcloud`，插件自动提取 Token 与当前激活的 Project ID |
 
-> **提示**：区域（Location）默认使用 `us-central1`。如需切换区域（例如 `us-east4`、`europe-west4` 等），可在高级设置的「请求头」中添加 `location: 你的区域`，或在插件配置中统一设置。
+> **提示**：区域（Location）默认使用 `global`。如需指定特定区域（例如 `us-central1`、`europe-west4` 等），可在高级设置的「请求头」中添加 `location: 你的区域`，或在插件配置中统一设置。
 
 3. **添加模型**：
    - 在 WebUI「模型管理」中点击「添加模型」，所属提供商选择刚创建的 Vertex 提供商。
@@ -76,7 +76,7 @@
 ```toml
 [[api_providers]]
 name = "Google-Vertex-Connect"
-base_url = "https://us-central1-aiplatform.googleapis.com"
+base_url = "https://aiplatform.googleapis.com"
 # 凭据可填入：Service Account JSON 绝对路径、完整 JSON 字符串、ya29 Token、API Key，或留空走本地 ADC/gcloud
 api_key = "/path/to/service-account.json"
 auth_type = "none"
@@ -87,7 +87,7 @@ retry_interval = 3
 
 [api_providers.default_headers]
 project = "your-gcp-project-id"             # GCP 项目 ID（若 api_key 为 SA JSON 可留空自动提取）
-location = "us-central1"                    # Vertex AI 区域（默认 us-central1）
+location = "global"                         # Vertex AI 区域（默认 global，也可填 us-central1 等）
 
 [[models]]
 model_identifier = "gemini-2.5-flash"
@@ -121,7 +121,7 @@ visual = true
 [plugin]
 enabled = true
 default_project = "your-gcp-project-id"
-default_location = "us-central1"
+default_location = "global"
 ```
 
 ---
