@@ -45,7 +45,7 @@
 1. 进入 MaiBot WebUI -> **「模型设置」** -> **「提供商管理」** -> 点击**「添加提供商」**：
    - **提供商名称**：自定义，例如 `vertex` 或 `Google-Vertex-Connect`
    - **客户端类型（Client Type）**：选择或输入 **`vertex_connect`**（核心必填项，关联本插件通道）
-   - **Base URL**：例如 `https://aiplatform.googleapis.com` 或 `https://us-central1-aiplatform.googleapis.com`
+   - **Base URL**：例如 `https://aiplatform.googleapis.com` 或 `https://us-central1-aiplatform.googleapis.com`（根据你想使用的区域填写）
 
 2. **根据你使用的鉴权方式，在 WebUI 进行相应填写**：
 
@@ -59,7 +59,19 @@
 | **6. 本地默认凭据 (ADC)** | **留空不填** | 添加 `project: 你的GCP项目ID` | 服务器执行过 `gcloud auth application-default login` |
 | **7. 本地 `gcloud` CLI 自动探测** | **留空不填** | **留空不填** | 服务器已安装并登录 `gcloud`，插件自动提取 Token 与当前激活的 Project ID |
 
-> **提示**：区域（Location）默认使用 `global`。如需指定特定区域（例如 `us-central1`、`europe-west4` 等），可在高级设置的「请求头」中添加 `location: 你的区域`，或在插件配置中统一设置。
+> [!TIP]
+> **关于 Base URL 与 Location（区域）自动推导机制与注意事项**：
+>
+> 插件内置了 **URL 区域智能提取与推导逻辑**，规则如下：
+> - **使用 Google 官方区域 URL（推荐，无需手动配置 location）**：
+>   - 单区域端点（如 `https://us-central1-aiplatform.googleapis.com`）：插件会自动捕获并设定 `location = "us-central1"`；
+>   - 多区域端点（如 `https://aiplatform.us.rep.googleapis.com`）：插件会自动捕获并设定 `location = "us"`；
+>   - 使用这类带区域的官方 URL 时，**请求头中的 `location` 留空即可**，插件会自动保持二者一致。
+> - **使用官方全局端点（`https://aiplatform.googleapis.com`）**：
+>   - 默认使用 `global`。如所请求的模型仅在特定区域开放（例如 `us` / `us-central1`），请在请求头中添加 `location: 目标区域`。
+> - **使用第三方自建反向代理（如自定义域名）**：
+>   - 插件无法从自定义域名识别出所属区域，若不配置将降级使用 `global`。若后端代理转接到特定区域模型，**必须在请求头中显式指定 `location`**（如 `us` 或 `us-central1`），否则 Google 会因资源路径不匹配返回 `404 Not Found` 或 `400 Location not supported`。
+> - **避免冲突**：切勿将 URL 区域与手动配置的 `location` 混配为不同区域（例如配了 `us-central1` 的 URL 却在请求头指定 `europe-west4`），否则 Google 区域网关会直接返回 400 校验拒绝错误。
 
 3. **添加模型**：
    - 在 WebUI「模型管理」中点击「添加模型」，所属提供商选择刚创建的 Vertex 提供商。
@@ -87,7 +99,7 @@ retry_interval = 3
 
 [api_providers.default_headers]
 project = "your-gcp-project-id"             # GCP 项目 ID（若 api_key 为 SA JSON 可留空自动提取）
-location = "global"                         # Vertex AI 区域（默认 global，也可填 us-central1 等）
+location = "global"                         # Vertex AI 区域（默认 global；若 base_url 已含区域如 us/us-central1 可留空自动提取）
 
 [[models]]
 model_identifier = "gemini-2.5-flash"
