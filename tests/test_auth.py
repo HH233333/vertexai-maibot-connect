@@ -90,3 +90,24 @@ def test_auth_location_from_base_url():
         }
     )
     assert auth_info.location == "us-east4"
+
+
+def test_auth_location_defaults():
+    # 1. 没有任何 location 且 base_url 是标准全局地址时，默认必须是 global
+    auth_info = resolve_vertex_auth(
+        provider_data={
+            "api_key": "AIzaSy_sample_key",
+            "project": "proj-1",
+            "base_url": "https://aiplatform.googleapis.com",
+        }
+    )
+    assert auth_info.location == "global"
+
+    # 2. 完全不传 base_url 和 location 时，也是 global
+    auth_info2 = resolve_vertex_auth(
+        provider_data={
+            "api_key": "AIzaSy_sample_key",
+            "project": "proj-1",
+        }
+    )
+    assert auth_info2.location == "global"

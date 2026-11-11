@@ -128,22 +128,21 @@ def resolve_vertex_auth(
 
     project: Optional[str] = configured_project if configured_project else None
 
-    # 2. 解析 location：优先直接配置，其次从请求头/查询参数提取，或从 base_url 推导
+    # 2. 解析 location：优先直接配置（provider、headers、query），其次从 base_url 推导，最后降级到 default_location / global
     location = str(provider.get("location") or "").strip()
-    header_loc = _extract_case_insensitive(headers, "location", "region")
-    if header_loc:
-        location = header_loc
     if not location:
-        query_loc = _extract_case_insensitive(query, "location", "region")
-        if query_loc:
-            location = query_loc
-    if not location or location == "global":
+        location = _extract_case_insensitive(headers, "location", "region") or ""
+    if not location:
+        location = _extract_case_insensitive(query, "location", "region") or ""
+    if not location:
         base_url = str(provider.get("base_url") or "").strip().lower()
         url_match = re.search(r"https?://(?:([a-z0-9-]+)-aiplatform|aiplatform\.([a-z0-9-]+))\.", base_url)
         if url_match:
-            location = url_match.group(1) or url_match.group(2)
-        elif not location:
-            location = default_location.strip() or os.getenv("VERTEX_LOCATION", "global").strip()
+            candidate_loc = url_match.group(1) or url_match.group(2)
+            if candidate_loc and candidate_loc not in {"googleapis", "rep"}:
+                location = candidate_loc
+    if not location:
+        location = default_location.strip() or os.getenv("VERTEX_LOCATION", "global").strip()
     location = location or "global"
 
     # 1. 直接提供 OAuth2 Bearer Access Token (通常以 ya29. 开头)
