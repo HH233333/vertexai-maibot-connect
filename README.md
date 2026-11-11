@@ -38,17 +38,25 @@
 .venv/bin/pip install -r plugins/vertexai-maibot-connect/requirements.txt
 ```
 
-### 2. 配置 MaiBot
-将 [配置片段示例](examples/model_config.fragment.toml) 合并到你的 `config/model_config.toml` 中：
+### 2. 配置模型提供商与任务
+
+你可以在 MaiBot 的 WebUI「模型配置」中添加，或直接在 `config/model_config.toml`（或 `host/model_catalog.toml`）中加入以下内容：
 
 ```toml
 [[api_providers]]
 name = "Google-Vertex-Connect"
 base_url = "https://us-central1-aiplatform.googleapis.com"
-api_key = "/path/to/service-account.json"  # 或填入 Bearer Token / Express API Key，或留空走本地 ADC/gcloud
+# 凭据可填入：Service Account JSON 文件绝对路径、JSON 字符串、ya29 Bearer Token，或留空使用系统 ADC / gcloud 凭据
+api_key = "/path/to/service-account.json"
 auth_type = "none"
-client_type = "vertex_connect"             # 必须为 vertex_connect
+client_type = "vertex_connect"             # 必须为 vertex_connect（对应插件注册的通道）
 timeout = 120
+max_retry = 2
+retry_interval = 3
+
+[api_providers.default_headers]
+project = "your-gcp-project-id"             # GCP 项目 ID
+location = "us-central1"                    # Vertex AI 区域（默认 us-central1）
 
 [[models]]
 model_identifier = "gemini-2.5-flash"
@@ -57,14 +65,34 @@ api_provider = "Google-Vertex-Connect"
 model_type = "llm"
 visual = true
 
+[models.extra_params]
+thinking_level = "low"                      # 可选：low / normal / high
+
+[[models]]
+model_identifier = "gemini-2.5-pro"
+name = "vertex-gemini-2.5-pro"
+api_provider = "Google-Vertex-Connect"
+model_type = "llm"
+visual = true
+
+# 将模型分配给各业务角色（按需分配）
 [model_task_config.replyer]
 model_list = ["vertex-gemini-2.5-flash"]
+temperature = 0.7
+max_tokens = 4096
+
+[model_task_config.planner]
+model_list = ["vertex-gemini-2.5-pro"]
+temperature = 0.3
+max_tokens = 4096
 
 [model_task_config.vlm]
 model_list = ["vertex-gemini-2.5-flash"]
+max_tokens = 4096
 
 [model_task_config.voice]
 model_list = ["vertex-gemini-2.5-flash"]
+max_tokens = 1024
 ```
 
 ### 3. 插件配置（可选）
