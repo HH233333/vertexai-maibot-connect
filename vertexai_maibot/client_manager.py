@@ -1,5 +1,5 @@
 from google import genai
-from google.genai.types import HttpOptions
+from google.genai.types import HttpOptions, HttpRetryOptions
 from typing import Any, Dict, Optional, Tuple
 
 import logging
@@ -11,7 +11,9 @@ logger = logging.getLogger("VertexAI-ClientManager")
 
 def _build_http_options(provider_data: Dict[str, Any]) -> HttpOptions:
     """根据 Provider 数据构建 Gemini SDK 的 HttpOptions。"""
-    http_options_payload: Dict[str, Any] = {}
+    http_options_payload: Dict[str, Any] = {
+        "retry_options": HttpRetryOptions(attempts=1),
+    }
 
     timeout = provider_data.get("timeout")
     if timeout is not None:
