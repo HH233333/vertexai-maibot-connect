@@ -138,6 +138,56 @@ default_location = "global"
 
 ---
 
+## 常见问题与排障（Troubleshooting）
+
+### 1. 快速检查运行状态与凭据
+- 在聊天框直接向 Bot 发送指令 **`/vertex_status`**：
+  - 插件会输出当前识别到的 **Project ID**、**Location** 以及**激活的鉴权模式**（如 Service Account / Express Key / ADC）。
+  - 若提示未识别到 Project ID，请检查 Provider 设置或插件配置。
+- 发送 **`/vertex_models`**：可查看官方推荐的常用 Gemini 模型标识列表。
+
+### 2. `PermissionDenied (403)` / IAM 权限不足
+- 确保你的 Google Cloud 项目中已**启用 Vertex AI API**：
+  - 前往 [Google Cloud Console API 库](https://console.cloud.google.com/apis/library/aiplatform.googleapis.com) 启用 `aiplatform.googleapis.com`。
+- 如果使用 Service Account，确保该服务账号在 IAM 中被授予了 **`Vertex AI User`（`roles/aiplatform.user`）** 角色。
+
+### 3. `404 Publisher Model ... not found` 或 `400 Location not supported`
+- 检查你请求的模型是否在该区域提供。推荐优先使用 `global` 或 `us-central1`；
+- 检查 `base_url` 与手动配置的 `location` 是否冲突（例如配了 `us-central1` 的端点却在请求头指定了 `europe-west4`）。
+
+### 4. 模型返回空内容或触发安全审核
+- Google Gemini 模型内置了严格的 Safety 过滤与 Recitation（防版权侵权）检测；
+- 若触发安全拦截，插件会捕获并暴露具体的原因（如 `finish_reason: SAFETY` 或 `block_reason`），并在 MaiBot 日志中清晰记录，以便排查输入提示词。
+
+---
+
+## 隐私与数据安全（Privacy & Security）
+
+- **本地凭据隔离**：你的 Google Cloud Service Account JSON 密钥、API Key 或访问令牌仅保存在本地服务器中，**绝不上传或回传至任何第三方服务器**；
+- **官方 API 直连**：所有的对话消息、图片多模态数据、语音识别切片以及向量嵌入请求，均**直连 Google 官方 Vertex AI 端点**（或你明确指定的自建网关），中间没有任何开发者中转代理；
+- **零遥测与埋点**：本插件源码完全公开透明，无任何数据埋点、使用追踪或上报机制；
+- **防意外泄露**：项目自带的 `.gitignore` 已内置过滤 `config.toml`、`config_back/` 以及各类 JSON 密钥文件，防止在版本管理或共享时意外泄露私钥。
+
+---
+
+## 开发与测试验证（Testing）
+
+在贡献代码或安装后验证环境时，可在 MaiBot 根目录下直接运行插件的单元测试套件：
+
+```bash
+# 运行全部插件单测
+.venv/bin/pytest plugins/vertexai-maibot-connect/tests -v
+```
+
+测试集涵盖：
+- 7 种鉴权模式（Bearer Token, Express Key, SA JSON 文件/字符串, ADC 等）与 Project ID 解析；
+- 多模态 Context Items（文本/图片/System 指令）转 Gemini Contents；
+- 工具定义与思考级别（`thinking_level`）配置映射；
+- 空响应安全拦截与 `finish_reason` 诊断；
+- 插件动态加载与卸载生命周期。
+
+---
+
 ## 许可证
 
 本项目采用 [MIT](LICENSE) 许可证。
