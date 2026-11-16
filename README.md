@@ -75,9 +75,9 @@
 
 3. **添加模型**：
    - 在 WebUI「模型管理」中点击「添加模型」，所属提供商选择刚创建的 Vertex 提供商。
-   - **模型标识符**：填入 Vertex 官方模型名称（如 `gemini-2.5-flash`、`gemini-2.5-pro`）。
+   - **模型标识符**：填入 Vertex 官方模型名称（如 `gemini-2.5-flash`、`gemini-3.8-flash`、`gemini-4-argon` 等）。
    - **视觉模型（Visual）**：勾选（Gemini 原生支持多模态看图与表情包审核）。
-   - **思考参数（可选）**：可在「额外参数（Extra Params）」中添加 `thinking_level = "low"`（支持 `low` / `normal` / `high`）。
+   - **思考参数（可选）**：可在「额外参数（Extra Params）」中配置 `enable_thinking`、`thinking_level` 或 `thinking_budget`（详见下方分代说明）。
 
 ---
 
@@ -109,15 +109,32 @@ model_type = "llm"
 visual = true
 
 [models.extra_params]
-thinking_level = "low"                      # 可选：low / normal / high
+thinking_budget = 1024                      # Gemini 2.5 系列使用 thinking_budget（0 为关闭，-1 为动态）
 
 [[models]]
-model_identifier = "gemini-2.5-pro"
-name = "vertex-gemini-2.5-pro"
+model_identifier = "gemini-4-argon"
+name = "vertex-gemini-4-argon"
 api_provider = "Google-Vertex-Connect"
 model_type = "llm"
 visual = true
+
+[models.extra_params]
+thinking_level = "low"                      # Gemini 3/4 系列使用 thinking_level（low / medium / high）
 ```
+
+> [!IMPORTANT]
+> **思考参数设置注意事项（Gemini 2.5 / 3 / 4 分代规范）**：
+>
+> Google 对不同世代模型的思考参数有严格约束，错误的参数会触发 `HTTP 400` 校验失败：
+> - **Gemini 4 系列**（如 `gemini-4-argon` / `hydrogen`）：使用 `thinking_level`，仅支持 `LOW`、`MEDIUM`、`HIGH`、`XHIGH`。**严禁设为 `MINIMAL`**（会触发 HTTP 400 错误）。
+> - **Gemini 3 系列**：使用 `thinking_level`。Flash 等轻量系列支持 `MINIMAL`、`LOW`、`MEDIUM`、`HIGH`；Pro 系列不支持 `MINIMAL`，最低为 `LOW`。
+> - **Gemini 2.5 系列**：使用 `thinking_budget`（整数 Token 预算）。Flash 系列设为 `0` 可彻底关闭思考，开启时最低为 `128`；Pro 系列**不支持设为 `0` 关闭**，最低预算为 `128`（或 `-1` 动态思考）。
+> - **严禁双传**：`thinking_level` 与 `thinking_budget` **不可同时配置**，否则 Google API 会报 400 拒绝请求。
+>
+> **插件内置智能适配与告警机制**：
+> 1. **`enable_thinking = true`（快捷最低配置）**：当开启 `enable_thinking = true` 且未指定具体级别/预算时，插件会自动为当前模型匹配**可用最低思考配置**（Gemini 4 / 3 Pro -> `LOW`；Gemini 3 Flash -> `MINIMAL`；Gemini 2.5 -> `128`）。
+> 2. **`enable_thinking = false`（关闭/最小化思考）**：Gemini 2.5 Flash 会被设为 `budget = 0` 彻底关闭；Gemini 3 Flash 会降至 `MINIMAL`；不可关闭的模型系列（2.5 Pro / 3 Pro / 4）会降级至各自最低合法配置并隐藏思考文本（`include_thoughts = false`）。
+> 3. **异常兜底与 WARNING 日志**：当出现参数双传冲突、跨世代错配（如给 2.5 配 level 或给 3/4 配 budget），或设置模型不支持的级别/预算（如给 Gemini 4 传 `MINIMAL`、给 2.5 Pro 传 `0`）时，插件会自动进行安全纠偏防止崩溃，并在后台日志中输出 **`WARNING`** 级别告警提示修正。
 
 ---
 

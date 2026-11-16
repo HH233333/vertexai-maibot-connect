@@ -9,10 +9,12 @@ if plugin_root not in sys.path:
 
 from vertexai_maibot.converter import (
     build_generate_content_config,
+    build_thinking_config,
     convert_context_items_to_contents,
     convert_tools_to_gemini,
     parse_gemini_response_to_maibot,
 )
+import logging
 from google.genai import types
 
 
@@ -232,4 +234,99 @@ def test_convert_parallel_function_calls_and_responses():
     assert next_user_turn.role == "user"
     assert len(next_user_turn.parts) == 1
     assert next_user_turn.parts[0].text == "请总结"
+
+
+def test_thinking_enable_lowest_per_generation():
+    """测试 enable_thinking=True 时，不同世代自动选用各自可用的最低思考配置。"""
+    # 1. Gemini 4 -> LOW（不可用 MINIMAL）
+    cfg4 = build_thinking_config("gemini-4-argon", {"enable_thinking": True})
+    assert str(cfg4.thinking_level).upper().endswith("LOW")
+    assert cfg4.thinking_budget is None
+    assert cfg4.include_thoughts is True
+
+    # 2. Gemini 3 Pro -> LOW
+    cfg3_pro = build_thinking_config("gemini-3.1-pro", {"enable_thinking": True})
+    assert str(cfg3_pro.thinking_level).upper().endswith("LOW")
+    assert cfg3_pro.thinking_budget is None
+
+    # 3. Gemini 3 Flash -> MINIMAL
+    cfg3_flash = build_thinking_config("gemini-3.8-flash", {"enable_thinking": True})
+    assert str(cfg3_flash.thinking_level).upper().endswith("MINIMAL")
+    assert cfg3_flash.thinking_budget is None
+
+    # 4. Gemini 2.5 Flash / Pro -> 128（最低正数预算）
+    cfg2_flash = build_thinking_config("gemini-2.5-flash", {"enable_thinking": True})
+    assert cfg2_flash.thinking_budget == 128
+    assert cfg2_flash.thinking_level is None
+
+    cfg2_pro = build_thinking_config("gemini-2.5-pro", {"enable_thinking": True})
+    assert cfg2_pro.thinking_budget == 128
+    assert cfg2_pro.thinking_level is None
+
+
+def test_thinking_warnings_and_safety_fallbacks(caplog):
+    """测试配置冲突、跨代错配及非法级别时输出 WARNING 日志并自动安全兜底。"""
+    caplog.set_level(logging.WARNING, logger="VertexAI-Converter")
+
+    # 1. Gemini 4 传入 MINIMAL -> 告警并兜底为 LOW
+    caplog.clear()
+    cfg_g4_min = build_thinking_config("gemini-4-hydrogen", {"thinking_level": "MINIMAL"})
+    assert str(cfg_g4_min.thinking_level).upper().endswith("LOW")
+    assert any(r.levelno >= logging.WARNING and "MINIMAL" in r.message for r in caplog.records)
+
+    # 2. 同时传 level 与 budget -> 告警并按世代互斥保留
+    caplog.clear()
+    cfg_both_g3 = build_thinking_config(
+        "gemini-3.8-flash",
+        {"thinking_level": "HIGH", "thinking_budget": 1024},
+    )
+    assert str(cfg_both_g3.thinking_level).upper().endswith("HIGH")
+    assert cfg_both_g3.thinking_budget is None
+    assert any(r.levelno >= logging.WARNING and "400" in r.message for r in caplog.records)
+
+    caplog.clear()
+    cfg_both_g2 = build_thinking_config(
+        "gemini-2.5-flash",
+        {"thinking_level": "HIGH", "thinking_budget": 2048},
+    )
+    assert cfg_both_g2.thinking_budget == 2048
+    assert cfg_both_g2.thinking_level is None
+    assert any(r.levelno >= logging.WARNING and "400" in r.message for r in caplog.records)
+
+    # 3. Gemini 2.5 Pro 尝试关闭或设为 0 -> 告警并兜底为 128
+    caplog.clear()
+    cfg_25pro_zero = build_thinking_config("gemini-2.5-pro", {"thinking_budget": 0})
+    assert cfg_25pro_zero.thinking_budget == 128
+    assert any(r.levelno >= logging.WARNING and "128" in r.message for r in caplog.records)
+
+    caplog.clear()
+    cfg_25pro_off = build_thinking_config("gemini-2.5-pro", {"enable_thinking": False})
+    assert cfg_25pro_off.thinking_budget == 128
+    assert cfg_25pro_off.include_thoughts is False
+    assert any(r.levelno >= logging.WARNING for r in caplog.records)
+
+    # 4. Gemini 2.5 Flash 关闭思考 -> 正常设为 0
+    caplog.clear()
+    cfg_25flash_off = build_thinking_config("gemini-2.5-flash", {"enable_thinking": False})
+    assert cfg_25flash_off.thinking_budget == 0
+    assert cfg_25flash_off.include_thoughts is False
+
+    # 5. 跨代参数映射并告警
+    caplog.clear()
+    cfg_cross_3 = build_thinking_config("gemini-3.8-flash", {"thinking_budget": 4096})
+    assert str(cfg_cross_3.thinking_level).upper().endswith("MEDIUM")
+    assert cfg_cross_3.thinking_budget is None
+    assert any(r.levelno >= logging.WARNING for r in caplog.records)
+
+    caplog.clear()
+    cfg_cross_2 = build_thinking_config("gemini-2.5-flash", {"thinking_level": "LOW"})
+    assert cfg_cross_2.thinking_budget == 1024
+    assert cfg_cross_2.thinking_level is None
+    assert any(r.levelno >= logging.WARNING for r in caplog.records)
+
+    # 6. Gemini 1.5 不支持 ThinkingConfig -> 告警并忽略
+    caplog.clear()
+    cfg_15 = build_thinking_config("gemini-1.5-pro", {"thinking_level": "LOW"})
+    assert cfg_15 is None
+    assert any(r.levelno >= logging.WARNING for r in caplog.records)
 

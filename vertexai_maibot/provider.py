@@ -39,7 +39,11 @@ class VertexAIProvider:
         model_name = self._resolve_model_name(request.get("model_info"))
         context_items = request.get("context_items") or []
         contents, system_instruction = convert_context_items_to_contents(context_items)
-        config = build_generate_content_config(request, system_instruction=system_instruction)
+        config = build_generate_content_config(
+            request,
+            system_instruction=system_instruction,
+            model_name=model_name,
+        )
 
         logger.debug(
             "调用 Vertex AI 响应: model=%s, contents_len=%d, has_system=%s",

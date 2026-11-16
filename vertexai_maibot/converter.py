@@ -9,6 +9,282 @@ import uuid
 logger = logging.getLogger("VertexAI-Converter")
 
 ITEM_SCHEMA_VERSION = 1
+_MIN_THINKING_BUDGET = 128
+_VALID_LEVELS_ALL = {"MINIMAL", "LOW", "MEDIUM", "HIGH", "XHIGH"}
+_LEVEL_TO_BUDGET = {
+    "MINIMAL": 0,
+    "LOW": 1024,
+    "MEDIUM": 4096,
+    "HIGH": 8192,
+    "XHIGH": 16384,
+}
+
+
+def _parse_optional_bool(value: Any) -> Optional[bool]:
+    """解析可选布尔值开关。"""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in ("true", "1", "yes", "on"):
+        return True
+    if text in ("false", "0", "no", "off"):
+        return False
+    return None
+
+
+def _detect_model_generation(model_name: str) -> Tuple[str, bool]:
+    """识别 Gemini 模型世代（4 / 3 / 2 / 1 / unknown）及是否为 Pro 系列。"""
+    m = (model_name or "").lower().strip()
+    if "/" in m:
+        m = m.split("/")[-1]
+    is_pro = "pro" in m
+    if "gemini-4" in m or "argon" in m or "hydrogen" in m:
+        return "4", is_pro
+    if "gemini-3" in m:
+        return "3", is_pro
+    if "gemini-2" in m:
+        return "2", is_pro
+    if "gemini-1" in m:
+        return "1", is_pro
+    return "unknown", is_pro
+
+
+def build_thinking_config(
+    model_name: str,
+    extra_params: Optional[Dict[str, Any]] = None,
+) -> Optional[types.ThinkingConfig]:
+    """根据 Gemini 模型世代与用户参数构建安全互斥的 ThinkingConfig，并在配置异常时告警兜底。"""
+    raw_params = dict(extra_params or {})
+    explicit = raw_params.get("thinking_config") or raw_params.get("think_config")
+    if explicit is not None:
+        if not isinstance(explicit, dict):
+            return explicit
+        # 将显式字典合并进来统一做世代互斥校验与兜底
+        raw_params = {**raw_params, **explicit}
+
+    gen, is_pro = _detect_model_generation(model_name)
+    display_model = model_name or "<unknown>"
+
+    enable_thinking = _parse_optional_bool(raw_params.get("enable_thinking"))
+    include_thoughts = bool(raw_params.get("include_thoughts", True))
+    raw_level = raw_params.get("thinking_level") or raw_params.get("reasoning_effort")
+    raw_budget = raw_params.get("thinking_budget")
+
+    parsed_level: Optional[str] = None
+    if raw_level is not None:
+        lvl_str = str(raw_level).strip().upper()
+        if lvl_str:
+            parsed_level = lvl_str
+
+    parsed_budget: Optional[int] = None
+    if raw_budget is not None:
+        try:
+            parsed_budget = int(raw_budget)
+        except (TypeError, ValueError):
+            logger.warning(
+                "模型 %s 的 thinking_budget=%r 无法解析为整数，已忽略",
+                display_model,
+                raw_budget,
+            )
+
+    # 1. Gemini 1.x 不支持任何思考配置
+    if gen == "1":
+        if parsed_level is not None or parsed_budget is not None or enable_thinking is True:
+            logger.warning(
+                "模型 %s（Gemini 1.x）不支持思考配置（ThinkingConfig），已自动忽略思考参数以防报错",
+                display_model,
+            )
+        return None
+
+    # 2. 用户显式关闭思考 (enable_thinking = false)
+    if enable_thinking is False:
+        if parsed_level is not None or parsed_budget is not None:
+            logger.warning(
+                "模型 %s 同时配置了 enable_thinking=False 与显式思考参数（thinking_level=%r, thinking_budget=%r），将按关闭/最低思考处理",
+                display_model,
+                parsed_level,
+                parsed_budget,
+            )
+        if gen == "4" or (gen == "3" and is_pro):
+            logger.warning(
+                "模型 %s 不支持关闭思考或使用 MINIMAL 级别，已自动兜底为最低可用级别 'LOW' 并隐藏思考输出",
+                display_model,
+            )
+            return types.ThinkingConfig(thinking_level="LOW", include_thoughts=False)
+        if gen == "3":
+            return types.ThinkingConfig(thinking_level="MINIMAL", include_thoughts=False)
+        if gen == "2":
+            if is_pro:
+                logger.warning(
+                    "模型 %s（Gemini 2.5 Pro）不支持关闭思考（thinking_budget=0 会触发 400 错误），已自动兜底为最低可用预算 %d 并隐藏思考输出",
+                    display_model,
+                    _MIN_THINKING_BUDGET,
+                )
+                return types.ThinkingConfig(thinking_budget=_MIN_THINKING_BUDGET, include_thoughts=False)
+            return types.ThinkingConfig(thinking_budget=0, include_thoughts=False)
+        return types.ThinkingConfig(thinking_budget=0, include_thoughts=False)
+
+    # 3. 互斥检查：Google API 严禁 thinking_level 与 thinking_budget 共存
+    if parsed_level is not None and parsed_budget is not None:
+        if gen in ("4", "3"):
+            logger.warning(
+                "模型 %s 同时传入了 thinking_level=%r 与 thinking_budget=%d（Google API 严禁两者共存，否则触发 HTTP 400）。已为 Gemini %s+ 模型保留 thinking_level 并丢弃 thinking_budget",
+                display_model,
+                parsed_level,
+                parsed_budget,
+                gen,
+            )
+            parsed_budget = None
+        elif gen == "2":
+            logger.warning(
+                "模型 %s 同时传入了 thinking_level=%r 与 thinking_budget=%d（Google API 严禁两者共存，否则触发 HTTP 400）。已为 Gemini 2.x 模型保留 thinking_budget 并丢弃 thinking_level",
+                display_model,
+                parsed_level,
+                parsed_budget,
+            )
+            parsed_level = None
+        else:
+            logger.warning(
+                "模型 %s 同时传入了 thinking_level=%r 与 thinking_budget=%d（Google API 严禁两者共存，否则触发 HTTP 400）。已优先保留 thinking_level 并丢弃 thinking_budget",
+                display_model,
+                parsed_level,
+                parsed_budget,
+            )
+            parsed_budget = None
+
+    # 4. Gemini 3+ / 4 世代：仅允许使用 thinking_level
+    if gen in ("4", "3"):
+        if gen == "4":
+            valid_levels = {"LOW", "MEDIUM", "HIGH", "XHIGH"}
+            lowest_level = "LOW"
+        elif is_pro:
+            valid_levels = {"LOW", "MEDIUM", "HIGH"}
+            lowest_level = "LOW"
+        else:
+            valid_levels = {"MINIMAL", "LOW", "MEDIUM", "HIGH"}
+            lowest_level = "MINIMAL"
+
+        if parsed_level is not None:
+            if parsed_level in valid_levels:
+                target_level = parsed_level
+            elif parsed_level == "XHIGH" and gen == "3":
+                logger.warning(
+                    "模型 %s（Gemini 3）不支持 thinking_level='XHIGH'，已自动降级为 'HIGH'",
+                    display_model,
+                )
+                target_level = "HIGH"
+            elif parsed_level == "MINIMAL" and (gen == "4" or is_pro):
+                logger.warning(
+                    "模型 %s 不支持 thinking_level='MINIMAL'（会触发 HTTP 400 验证错误），已自动兜底调整为最低可用级别 'LOW'",
+                    display_model,
+                )
+                target_level = "LOW"
+            else:
+                logger.warning(
+                    "模型 %s 收到不支持的 thinking_level=%r（允许值: %s），已自动兜底为 '%s'",
+                    display_model,
+                    parsed_level,
+                    sorted(valid_levels),
+                    lowest_level,
+                )
+                target_level = lowest_level
+            return types.ThinkingConfig(thinking_level=target_level, include_thoughts=include_thoughts)
+
+        if parsed_budget is not None:
+            if parsed_budget <= 0:
+                mapped_level = lowest_level
+            elif parsed_budget <= 1024:
+                mapped_level = "LOW"
+            elif parsed_budget <= 4096:
+                mapped_level = "MEDIUM"
+            else:
+                mapped_level = "HIGH"
+            logger.warning(
+                "模型 %s（Gemini %s 世代）不支持 thinking_budget=%d，已自动换算映射为 thinking_level=%r",
+                display_model,
+                gen,
+                parsed_budget,
+                mapped_level,
+            )
+            return types.ThinkingConfig(thinking_level=mapped_level, include_thoughts=include_thoughts)
+
+        if enable_thinking is True:
+            return types.ThinkingConfig(thinking_level=lowest_level, include_thoughts=include_thoughts)
+
+        return types.ThinkingConfig(include_thoughts=include_thoughts)
+
+    # 5. Gemini 2.x 世代：仅允许使用 thinking_budget
+    if gen == "2":
+        if parsed_budget is not None:
+            target_budget = parsed_budget
+            if parsed_budget < -1:
+                logger.warning(
+                    "模型 %s 的 thinking_budget=%d 非法（不能小于 -1），已自动兜底为动态自适应 -1",
+                    display_model,
+                    parsed_budget,
+                )
+                target_budget = -1
+            elif is_pro and parsed_budget == 0:
+                logger.warning(
+                    "模型 %s（Gemini 2.5 Pro）不支持 thinking_budget=0（会触发 HTTP 400 错误），已自动兜底为最低可用预算 %d",
+                    display_model,
+                    _MIN_THINKING_BUDGET,
+                )
+                target_budget = _MIN_THINKING_BUDGET
+            elif is_pro and 0 < parsed_budget < _MIN_THINKING_BUDGET:
+                logger.warning(
+                    "模型 %s（Gemini 2.5 Pro）的 thinking_budget=%d 低于官方最低要求 %d，已自动上调为 %d",
+                    display_model,
+                    parsed_budget,
+                    _MIN_THINKING_BUDGET,
+                    _MIN_THINKING_BUDGET,
+                )
+                target_budget = _MIN_THINKING_BUDGET
+            return types.ThinkingConfig(thinking_budget=target_budget, include_thoughts=include_thoughts)
+
+        if parsed_level is not None:
+            if parsed_level == "MINIMAL":
+                mapped_budget = _MIN_THINKING_BUDGET if (is_pro or enable_thinking is True) else 0
+            else:
+                mapped_budget = _LEVEL_TO_BUDGET.get(parsed_level, 1024)
+            logger.warning(
+                "模型 %s（Gemini 2.x 世代）不支持 thinking_level=%r，已自动换算映射为 thinking_budget=%d",
+                display_model,
+                parsed_level,
+                mapped_budget,
+            )
+            return types.ThinkingConfig(thinking_budget=mapped_budget, include_thoughts=include_thoughts)
+
+        if enable_thinking is True:
+            return types.ThinkingConfig(thinking_budget=_MIN_THINKING_BUDGET, include_thoughts=include_thoughts)
+
+        return types.ThinkingConfig(include_thoughts=include_thoughts)
+
+    # 6. 未知/未指定模型名时的通用兜底
+    if parsed_level is not None:
+        if parsed_level not in _VALID_LEVELS_ALL:
+            logger.warning("模型 %s 收到无效的 thinking_level=%r，已自动兜底为 'LOW'", display_model, parsed_level)
+            parsed_level = "LOW"
+        return types.ThinkingConfig(thinking_level=parsed_level, include_thoughts=include_thoughts)
+
+    if parsed_budget is not None:
+        if parsed_budget < -1:
+            logger.warning("模型 %s 的 thinking_budget=%d 非法，已自动兜底为 -1", display_model, parsed_budget)
+            parsed_budget = -1
+        return types.ThinkingConfig(thinking_budget=parsed_budget, include_thoughts=include_thoughts)
+
+    if enable_thinking is True:
+        logger.warning(
+            "模型 %s 未识别出具体 Gemini 世代，无法精确匹配最低思考级别/预算，已启用默认 include_thoughts=True",
+            display_model,
+        )
+        return types.ThinkingConfig(include_thoughts=True)
+
+    return types.ThinkingConfig(include_thoughts=include_thoughts)
 
 
 def _normalize_image_mime(image_format: str) -> str:
@@ -180,6 +456,7 @@ def convert_tools_to_gemini(tool_options: Optional[List[Dict[str, Any]]]) -> Lis
 def build_generate_content_config(
     request: Dict[str, Any],
     system_instruction: Optional[str] = None,
+    model_name: Optional[str] = None,
 ) -> types.GenerateContentConfig:
     """根据 MaiBot 请求快照构建 GenerateContentConfig。"""
     config_args: Dict[str, Any] = {}
@@ -214,30 +491,15 @@ def build_generate_content_config(
         )
 
     # 思考链（Thinking）
-    extra_params = request.get("extra_params") or {}
-    explicit_thinking = extra_params.get("thinking_config") or extra_params.get("think_config")
-    if explicit_thinking is not None:
-        if isinstance(explicit_thinking, dict):
-            config_args["thinking_config"] = types.ThinkingConfig(**explicit_thinking)
-        else:
-            config_args["thinking_config"] = explicit_thinking
-    else:
-        thinking_level = extra_params.get("thinking_level") or extra_params.get("reasoning_effort")
-        thinking_budget = None
-        if "thinking_budget" in extra_params:
-            try:
-                thinking_budget = int(extra_params["thinking_budget"])
-            except (TypeError, ValueError):
-                pass
+    resolved_model = str(model_name or "").strip()
+    if not resolved_model:
+        model_info = request.get("model_info") or {}
+        resolved_model = str(model_info.get("model_identifier") or model_info.get("name") or "").strip()
 
-        thinking_args: Dict[str, Any] = {
-            "include_thoughts": bool(extra_params.get("include_thoughts", True))
-        }
-        if thinking_level is not None:
-            thinking_args["thinking_level"] = str(thinking_level).strip()
-        if thinking_budget is not None:
-            thinking_args["thinking_budget"] = thinking_budget
-        config_args["thinking_config"] = types.ThinkingConfig(**thinking_args)
+    extra_params = request.get("extra_params") or {}
+    thinking_config = build_thinking_config(resolved_model, extra_params)
+    if thinking_config is not None:
+        config_args["thinking_config"] = thinking_config
 
     return types.GenerateContentConfig(**config_args)
 
