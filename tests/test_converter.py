@@ -8,12 +8,15 @@ if plugin_root not in sys.path:
     sys.path.insert(0, plugin_root)
 
 from vertexai_maibot.converter import (
+    build_embed_content_config,
     build_generate_content_config,
     build_thinking_config,
     convert_context_items_to_contents,
     convert_tools_to_gemini,
+    parse_embedding_response,
     parse_gemini_response_to_maibot,
 )
+from vertexai_maibot.provider import VertexAIProvider
 import logging
 from google.genai import types
 
@@ -324,9 +327,112 @@ def test_thinking_warnings_and_safety_fallbacks(caplog):
     assert cfg_cross_2.thinking_level is None
     assert any(r.levelno >= logging.WARNING for r in caplog.records)
 
-    # 6. Gemini 1.5 不支持 ThinkingConfig -> 告警并忽略
+    # 6. 已下线的老一代模型（Gemini 1.5 / 2.0）直接拒绝并提示升级
+    import pytest
+
+    with pytest.raises(ValueError, match="老一代已下线模型"):
+        build_thinking_config("gemini-1.5-pro", {"thinking_level": "LOW"})
+    with pytest.raises(ValueError, match="老一代已下线模型"):
+        build_thinking_config("gemini-2.0-flash", {})
+
+
+def test_embedding_config_gemini_embedding_2_only(caplog):
+    """测试仅支持 Gemini Embedding 2，拒绝老模型，告警忽略 task_type，映射 dimensions。"""
+    import pytest
+
+    caplog.set_level(logging.WARNING, logger="VertexAI-Converter")
+
+    # 1. 拒绝老一代嵌入模型
+    for legacy_model in (
+        "gemini-embedding-001",
+        "text-embedding-004",
+        "text-embedding-005",
+        "text-multilingual-embedding-002",
+        "multimodalembedding@001",
+    ):
+        with pytest.raises(ValueError, match="老一代嵌入模型"):
+            build_embed_content_config(legacy_model, {})
+
+    # 2. Gemini Embedding 2：忽略 task_type / task / title 并打 WARNING，正确映射 dimensions 与 auto_truncate
     caplog.clear()
-    cfg_15 = build_thinking_config("gemini-1.5-pro", {"thinking_level": "LOW"})
-    assert cfg_15 is None
-    assert any(r.levelno >= logging.WARNING for r in caplog.records)
+    cfg = build_embed_content_config(
+        "gemini-embedding-2-preview",
+        {
+            "dimensions": 1536,
+            "task_type": "RETRIEVAL_DOCUMENT",
+            "title": "legacy_title",
+            "auto_truncate": True,
+        },
+    )
+    assert cfg is not None
+    assert cfg.output_dimensionality == 1536
+    assert cfg.auto_truncate is True
+    assert cfg.task_type is None
+    assert cfg.title is None
+    assert any(r.levelno >= logging.WARNING and "task_type" in r.message for r in caplog.records)
+
+    # 3. 无额外参数时返回 None
+    assert build_embed_content_config("gemini-embedding-2", {}) is None
+
+    # 4. dimensions 与 output_dimensionality 冲突应报错
+    with pytest.raises(ValueError, match="冲突"):
+        build_embed_content_config(
+            "gemini-embedding-2",
+            {"dimensions": 768, "output_dimensionality": 1536},
+        )
+
+
+def test_parse_embedding_response_and_image_embedding_provider():
+    """测试 parse_embedding_response 与 VertexAIProvider.handle_image_embedding 全流程。"""
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock
+
+    fake_resp = types.EmbedContentResponse(
+        embeddings=[
+            types.ContentEmbedding(
+                values=[0.1, 0.2, 0.3],
+                statistics=types.ContentEmbeddingStatistics(token_count=42.0, truncated=False),
+            )
+        ]
+    )
+    parsed = parse_embedding_response(fake_resp)
+    assert parsed["embedding"] == [0.1, 0.2, 0.3]
+    assert parsed["status"] == "completed"
+    assert parsed["usage"]["prompt_tokens"] == 42
+    assert parsed["usage"]["total_tokens"] == 42
+
+    # 模拟异步调用 handle_image_embedding
+    mock_client = MagicMock()
+    mock_embed_content = AsyncMock(return_value=fake_resp)
+    mock_client.aio.models.embed_content = mock_embed_content
+
+    mock_manager = MagicMock()
+    mock_manager.get_client.return_value = (mock_client, None)
+
+    provider = VertexAIProvider(mock_manager)
+    img_b64 = base64.b64encode(b"fake_png_data").decode("ascii")
+    result = asyncio.run(
+        provider.handle_image_embedding(
+            {
+                "image_base64": img_b64,
+                "mime_type": "image/png",
+                "model_info": {
+                    "model_identifier": "gemini-embedding-2-preview",
+                    "extra_params": {"dimensions": 1536},
+                },
+                "extra_params": {"dimensions": 1536, "task_type": "SEMANTIC_SIMILARITY"},
+            }
+        )
+    )
+    assert result["embedding"] == [0.1, 0.2, 0.3]
+    assert result["usage"]["prompt_tokens"] == 42
+
+    call_kwargs = mock_embed_content.call_args.kwargs
+    assert call_kwargs["model"] == "gemini-embedding-2-preview"
+    assert len(call_kwargs["contents"]) == 1
+    part = call_kwargs["contents"][0]
+    assert part.inline_data.data == b"fake_png_data"
+    assert part.inline_data.mime_type == "image/png"
+    assert call_kwargs["config"].output_dimensionality == 1536
+    assert call_kwargs["config"].task_type is None
 

@@ -92,6 +92,8 @@ class VertexAIConnectPlugin(MaiBotPlugin):
             return await self.provider.handle_audio_transcription(request)
         if operation == "embedding":
             return await self.provider.handle_embedding(request)
+        if operation == "image_embedding":
+            return await self.provider.handle_image_embedding(request)
 
         raise NotImplementedError(f"Vertex AI Provider 暂不支持操作: {operation}")
 
@@ -123,11 +125,12 @@ class VertexAIConnectPlugin(MaiBotPlugin):
     async def models_command(self, **kwargs: Any) -> tuple[bool, str, int]:
         stream = kwargs.get("stream_id")
         text = (
-            "【常用 Vertex AI 模型标识】\n"
-            "• 对话/规划/VLM: gemini-2.5-flash, gemini-2.5-pro, gemini-2.0-flash\n"
-            "• 语音转写 (voice): gemini-2.5-flash, gemini-2.0-flash\n"
-            "• 文本嵌入 (embedding): text-embedding-005, text-multilingual-embedding-002\n\n"
-            "在 config/model_config.toml 中配置 api_providers.client_type = 'vertex_connect' 即可使用。"
+            "【推荐 Vertex AI 模型标识（仅支持现役世代模型）】\n"
+            "• 对话/规划/VLM: gemini-4-argon, gemini-3.8-flash, gemini-2.5-flash, gemini-2.5-pro\n"
+            "• 语音转写 (voice): gemini-3.8-flash, gemini-2.5-flash\n"
+            "• 文本/多模态图片嵌入 (embedding / image_embedding): gemini-embedding-2-preview (或 gemini-embedding-2)\n\n"
+            "注：已移除对 Gemini 1.x/2.0、text-embedding-*、gemini-embedding-001 等已下线老一代模型的支持。\n"
+            "在 WebUI 或 config/model_config.toml 中配置 api_providers.client_type = 'vertex_connect' 即可使用。"
         )
         if stream:
             await self.ctx.send.text(text, stream)

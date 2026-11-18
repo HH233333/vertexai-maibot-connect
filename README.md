@@ -17,10 +17,10 @@
    - **本地 ADC 默认凭据**（`google.auth.default()`）
    - **本地 `gcloud` CLI 探测与 Access Token 自动提取**（`gcloud auth print-access-token`）
 2. **全角色多模态覆盖**：
-   - **文本对话与规划**：`replyer`, `planner`, `utils`, `memory` 等
+   - **文本对话与规划**：`replyer`, `planner`, `utils`, `memory` 等（支持现役 Gemini 2.5 / 3 / 4 系列）
    - **视觉多模态**：`vlm`（识图、表情包识别、聊天带图）
    - **语音消息识别**：`voice`（音频 Base64 直传 Gemini 进行精准 ASR 转写）
-   - **文本嵌入**：`embedding`
+   - **文本与多模态图片嵌入**：`embedding`、`image_embedding`（全面适配最新 **Gemini Embedding 2** 统一向量空间协议）
 3. **函数调用与思考链**：
    - 自动映射 MaiBot 工具定义（Tool Call / Function Calling）
    - 支持捕捉 Gemini 思考链（Thinking / Thought），组装为统一的 `ReasoningItem`
@@ -120,7 +120,30 @@ visual = true
 
 [models.extra_params]
 thinking_level = "low"                      # Gemini 3/4 系列使用 thinking_level（low / medium / high）
+
+[[models]]
+model_identifier = "gemini-embedding-2-preview"
+name = "vertex-gemini-embedding-2-image"
+api_provider = "Google-Vertex-Connect"
+model_type = "image_embedding"              # 多模态图片嵌入需指定为 image_embedding（纯文本嵌入为 embedding）
+
+[models.extra_params]
+dimensions = 1536                           # 可选降维（如 1536 / 768，不填默认输出 3072 维）
 ```
+
+> [!WARNING]
+> **已移除老一代模型支持（重要兼容说明）**：
+>
+> 由于上游 Google Cloud 已逐步下线并停止提供老一代模型服务，本插件**仅支持现役世代模型**，配置已淘汰模型名将直接报错提示升级：
+> - **对话 / 多模态 / 语音模型**：仅支持 **Gemini 2.5 / 3 / 4 系列**（已移除 Gemini 1.0 / 1.5 / 2.0 支持）；
+> - **文本与图片嵌入模型**：仅支持 **Gemini Embedding 2 系列**（如 `gemini-embedding-2-preview`、`gemini-embedding-2`），已彻底移除 `text-embedding-004/005`、`text-multilingual-embedding-002`、`gemini-embedding-001` 及旧版 `multimodalembedding@001` 的支持。
+
+> [!IMPORTANT]
+> **Gemini Embedding 2（图片/文本嵌入）配置注意事项**：
+>
+> 1. **禁止填写 `task_type` / `title`**：与老一代嵌入模型不同，**Gemini Embedding 2 已不支持 `task_type` / `task` / `title` 字段**（传入会导致请求报错）。如需区分文本用途请在输入前缀体现；若配置中误填了这些字段，插件会自动过滤并打印 `WARNING` 告警。
+> 2. **维度配置建议使用 `dimensions`**：Gemini Embedding 2 默认输出 **3072** 维向量，并支持通过 MRL 降维（如 `1536` / `768`）。在 `[models.extra_params]` 中请优先使用 **`dimensions = 1536`**（插件会自动映射为 Google SDK 的 `output_dimensionality`，同时配合 MaiBot 宿主准确计算向量空间指纹）。
+> 3. **与文本记忆维度独立**：在 MaiBot 的 `A_Memorix` 架构中，`image_embedding` 与纯文本 `embedding` 属于两套完全隔离的向量库，**图片维度无需与文本嵌入维度保持一致**；但一旦开始积累图片记忆，**切勿中途修改 `dimensions`**，否则会触发重新向量化重建索引。
 
 > [!IMPORTANT]
 > **思考参数设置注意事项（Gemini 2.5 / 3 / 4 分代规范）**：

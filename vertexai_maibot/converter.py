@@ -36,11 +36,50 @@ def _parse_optional_bool(value: Any) -> Optional[bool]:
     return None
 
 
-def _detect_model_generation(model_name: str) -> Tuple[str, bool]:
-    """识别 Gemini 模型世代（4 / 3 / 2 / 1 / unknown）及是否为 Pro 系列。"""
+_LEGACY_CHAT_MODEL_PREFIXES = ("gemini-1.", "gemini-1-", "gemini-2.0")
+_LEGACY_EMBEDDING_MODEL_PREFIXES = (
+    "text-embedding-",
+    "text-multilingual-embedding",
+    "multimodalembedding",
+    "embedding-001",
+    "gemini-embedding-001",
+)
+
+
+def _normalize_model_id(model_name: str) -> str:
     m = (model_name or "").lower().strip()
     if "/" in m:
         m = m.split("/")[-1]
+    return m
+
+
+def validate_supported_generation_model(model_name: str) -> None:
+    """校验生成模型是否在现役支持范围内；已下线老一代模型直接抛出异常。"""
+    m = _normalize_model_id(model_name)
+    if not m:
+        return
+    if any(m.startswith(prefix) for prefix in _LEGACY_CHAT_MODEL_PREFIXES):
+        raise ValueError(
+            f"插件已移除对老一代已下线模型 '{model_name}' 的支持："
+            "上游 Google 已停服老模型，请改用 Gemini 2.5 / 3 / 4 系列模型。"
+        )
+
+
+def validate_supported_embedding_model(model_name: str) -> None:
+    """校验嵌入模型是否在现役支持范围内；已下线老一代嵌入模型直接抛出异常。"""
+    m = _normalize_model_id(model_name)
+    if not m:
+        return
+    if any(prefix in m for prefix in _LEGACY_EMBEDDING_MODEL_PREFIXES):
+        raise ValueError(
+            f"插件已移除对老一代嵌入模型 '{model_name}' 的支持："
+            "上游 Google 已停服老模型，请改用 gemini-embedding-2 系列（如 gemini-embedding-2-preview / gemini-embedding-2）。"
+        )
+
+
+def _detect_model_generation(model_name: str) -> Tuple[str, bool]:
+    """识别现役 Gemini 模型世代（4 / 3 / 2 / unknown）及是否为 Pro 系列。"""
+    m = _normalize_model_id(model_name)
     is_pro = "pro" in m
     if "gemini-4" in m or "argon" in m or "hydrogen" in m:
         return "4", is_pro
@@ -48,8 +87,6 @@ def _detect_model_generation(model_name: str) -> Tuple[str, bool]:
         return "3", is_pro
     if "gemini-2" in m:
         return "2", is_pro
-    if "gemini-1" in m:
-        return "1", is_pro
     return "unknown", is_pro
 
 
@@ -58,6 +95,8 @@ def build_thinking_config(
     extra_params: Optional[Dict[str, Any]] = None,
 ) -> Optional[types.ThinkingConfig]:
     """根据 Gemini 模型世代与用户参数构建安全互斥的 ThinkingConfig，并在配置异常时告警兜底。"""
+    validate_supported_generation_model(model_name)
+
     raw_params = dict(extra_params or {})
     explicit = raw_params.get("thinking_config") or raw_params.get("think_config")
     if explicit is not None:
@@ -91,16 +130,7 @@ def build_thinking_config(
                 raw_budget,
             )
 
-    # 1. Gemini 1.x 不支持任何思考配置
-    if gen == "1":
-        if parsed_level is not None or parsed_budget is not None or enable_thinking is True:
-            logger.warning(
-                "模型 %s（Gemini 1.x）不支持思考配置（ThinkingConfig），已自动忽略思考参数以防报错",
-                display_model,
-            )
-        return None
-
-    # 2. 用户显式关闭思考 (enable_thinking = false)
+    # 1. 用户显式关闭思考 (enable_thinking = false)
     if enable_thinking is False:
         if parsed_level is not None or parsed_budget is not None:
             logger.warning(
@@ -633,3 +663,102 @@ def parse_gemini_response_to_maibot(
         result_payload["tool_calls"] = tool_calls_payload
 
     return result_payload
+
+
+def build_embed_content_config(
+    model_name: str,
+    extra_params: Optional[Dict[str, Any]] = None,
+) -> Optional[types.EmbedContentConfig]:
+    """构建符合 Gemini Embedding 2 规范的 EmbedContentConfig，拒绝老一代模型并告警丢弃无效历史参数。"""
+    validate_supported_embedding_model(model_name)
+
+    params = dict(extra_params or {})
+    display_model = model_name or "<unknown>"
+
+    # 检查并告警移除老一代模型专属参数（Gemini Embedding 2 不支持 task_type / task / title）
+    ignored_legacy_keys = [
+        k for k in ("task_type", "task", "title") if params.get(k) is not None and str(params.get(k)).strip() != ""
+    ]
+    if ignored_legacy_keys:
+        logger.warning(
+            "模型 %s 仅适配新一代 Gemini Embedding 2，上游不支持老一代参数 %s（传递会导致接口报错），已自动忽略",
+            display_model,
+            ", ".join(ignored_legacy_keys),
+        )
+
+    config_args: Dict[str, Any] = {}
+
+    # 维度配置：同时支持 output_dimensionality 与 MaiBot 宿主通用的 dimensions
+    raw_out_dim = params.get("output_dimensionality")
+    raw_dims = params.get("dimensions")
+    if raw_out_dim is not None and raw_dims is not None and str(raw_out_dim) != str(raw_dims):
+        try:
+            if int(raw_out_dim) != int(raw_dims):
+                raise ValueError(
+                    f"模型 {display_model} 的 extra_params.output_dimensionality({raw_out_dim}) "
+                    f"与 extra_params.dimensions({raw_dims}) 冲突"
+                )
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"模型 {display_model} 的维度配置冲突或格式无效: output_dimensionality={raw_out_dim!r}, dimensions={raw_dims!r}"
+            ) from exc
+
+    selected_dim = raw_out_dim if raw_out_dim is not None else raw_dims
+    if selected_dim is not None and str(selected_dim).strip() != "":
+        try:
+            dim_val = int(selected_dim)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"模型 {display_model} 的嵌入维度无效: {selected_dim!r}") from exc
+        if dim_val <= 0:
+            raise ValueError(f"模型 {display_model} 的嵌入维度必须大于 0，当前为: {dim_val}")
+        config_args["output_dimensionality"] = dim_val
+
+    for bool_key in ("auto_truncate", "document_ocr", "audio_track_extraction"):
+        if bool_key in params and params[bool_key] is not None:
+            parsed_flag = _parse_optional_bool(params[bool_key])
+            if parsed_flag is not None:
+                config_args[bool_key] = parsed_flag
+            else:
+                logger.warning("模型 %s 的 %s=%r 无法解析为布尔值，已忽略", display_model, bool_key, params[bool_key])
+
+    if not config_args:
+        return None
+    return types.EmbedContentConfig(**config_args)
+
+
+def parse_embedding_response(response: Any) -> Dict[str, Any]:
+    """解析 Vertex AI embed_content 响应并提取向量与 token 用量。"""
+    raw_embeddings = getattr(response, "embeddings", None)
+    values: List[float] = []
+    prompt_tokens = 0
+
+    if raw_embeddings:
+        first = raw_embeddings[0]
+        values = list(getattr(first, "values", None) or [])
+        statistics = getattr(first, "statistics", None)
+        if statistics is not None:
+            if getattr(statistics, "truncated", False):
+                logger.warning("Vertex AI 嵌入输入超出模型长度上限，已被自动截断")
+            token_count = getattr(statistics, "token_count", None)
+            if token_count is not None:
+                prompt_tokens = int(token_count)
+    elif hasattr(response, "embedding"):
+        first = getattr(response, "embedding", None)
+        values = list(getattr(first, "values", None) or [])
+
+    if not values:
+        raise RuntimeError("Vertex AI 嵌入接口返回了空向量")
+
+    payload: Dict[str, Any] = {
+        "embedding": [float(v) for v in values],
+        "status": "completed",
+    }
+    if prompt_tokens > 0:
+        payload["usage"] = {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": 0,
+            "total_tokens": prompt_tokens,
+            "prompt_cache_hit_tokens": 0,
+            "prompt_cache_miss_tokens": prompt_tokens,
+        }
+    return payload
